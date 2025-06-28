@@ -1,7 +1,7 @@
 from testing import assert_equal
 
 @always_inline
-fn decode_i2s_to_i8s_cuda_compatible(i2s: UInt32, i8s: UnsafePointer[Int8], n: Int = 16):
+fn decode_i2s_to_i8s_cuda_compatible(i2s: Int32, i8s: UnsafePointer[Int8], n: Int = 16):
     """CUDA compatible decode_i2s_to_i8s implementation."""
     
     # CUDA groups by bit position across all bytes:
@@ -18,9 +18,9 @@ fn decode_i2s_to_i8s_cuda_compatible(i2s: UInt32, i8s: UnsafePointer[Int8], n: I
             if output_idx >= n:
                 break
                 
-            var byte_val = (i2s >> (byte_idx * 8)) & UInt32(0xFF)
+            var byte_val = (i2s >> (byte_idx * 8)) & Int32(0xFF)
             var bit_pos = bit_pair_idx * 2
-            var two_bits = (byte_val >> bit_pos) & UInt32(0x3)
+            var two_bits = (byte_val >> bit_pos) & Int32(0x3)
             
             var decoded_val: Int8
             if two_bits == 0:
@@ -42,29 +42,29 @@ fn test_decode():
     print("=== Mojo decode_i2s_to_i8s 테스트 ===")
     
     # Test cases matching CUDA test
-    var test_cases = List[UInt32]()
-    test_cases.append(UInt32(0x00000000))  # all 00 → all -2
-    test_cases.append(UInt32(0xFFFFFFFF))  # all 11 → all 1  
-    test_cases.append(UInt32(0x55555555))  # all 01 → all -1
-    test_cases.append(UInt32(0xAAAAAAAA)) # all 10 → all 0
-    test_cases.append(UInt32(0x1B1B1B1B)) # mixed pattern
+    var test_cases = List[Int32]()
+    test_cases.append(Int32(0x00000000))  # all 00 → all -2
+    test_cases.append(Int32(0xFFFFFFFF))  # all 11 → all 1  
+    test_cases.append(Int32(0x55555555))  # all 01 → all -1
+    test_cases.append(Int32(0xAAAAAAAA)) # all 10 → all 0
+    test_cases.append(Int32(0x1B1B1B1B)) # mixed pattern
     
     # Additional random test cases
-    test_cases.append(UInt32(0x12345678))  # various pattern 1
-    test_cases.append(UInt32(0x9ABCDEF0))  # various pattern 2
-    test_cases.append(UInt32(0xCAFEBABE))  # various pattern 3
-    test_cases.append(UInt32(0xDEADBEEF))  # various pattern 4
-    test_cases.append(UInt32(0x13579BDF))  # odd pattern
-    test_cases.append(UInt32(0x2468ACE0))  # even pattern
-    test_cases.append(UInt32(0x0F0F0F0F))  # alternating pattern 1
-    test_cases.append(UInt32(0xF0F0F0F0))  # alternating pattern 2
-    test_cases.append(UInt32(0x87654321))  # reverse pattern
-    test_cases.append(UInt32(0x11111111))  # repeat pattern 1
-    test_cases.append(UInt32(0x22222222))  # repeat pattern 2
-    test_cases.append(UInt32(0x33333333))  # repeat pattern 3
-    test_cases.append(UInt32(0x01234567))  # sequential pattern
-    test_cases.append(UInt32(0xFEDCBA98))  # reverse sequential pattern
-    test_cases.append(UInt32(0x5A5A5A5A))  # checkerboard pattern
+    test_cases.append(Int32(0x12345678))  # various pattern 1
+    test_cases.append(Int32(0x9ABCDEF0))  # various pattern 2
+    test_cases.append(Int32(0xCAFEBABE))  # various pattern 3
+    test_cases.append(Int32(0xDEADBEEF))  # various pattern 4
+    test_cases.append(Int32(0x13579BDF))  # odd pattern
+    test_cases.append(Int32(0x2468ACE0))  # even pattern
+    test_cases.append(Int32(0x0F0F0F0F))  # alternating pattern 1
+    test_cases.append(Int32(0xF0F0F0F0))  # alternating pattern 2
+    test_cases.append(Int32(0x87654321))  # reverse pattern
+    test_cases.append(Int32(0x11111111))  # repeat pattern 1
+    test_cases.append(Int32(0x22222222))  # repeat pattern 2
+    test_cases.append(Int32(0x33333333))  # repeat pattern 3
+    test_cases.append(Int32(0x01234567))  # sequential pattern
+    test_cases.append(Int32(0xFEDCBA98))  # reverse sequential pattern
+    test_cases.append(Int32(0x5A5A5A5A))  # checkerboard pattern
     
     # Expected results (from CUDA reference)
     var expected_results = List[List[Int8]]()

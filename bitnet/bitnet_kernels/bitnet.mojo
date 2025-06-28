@@ -11,7 +11,7 @@ alias BITLINEAR_TPB = 128
 alias BITLINEAR_BLOCKS_PER_GRID = (1, 1)
 
 @always_inline
-fn decode_i2s_to_i8s(i2s: UInt32, i8s: UnsafePointer[Int8], n: Int = 16):
+fn decode_i2s_to_i8s(i2s: Int32, i8s: UnsafePointer[Int8], n: Int = 16):
     """CUDA compatible decode_i2s_to_i8s implementation.
     
     Decodes packed 2-bit signed integers into 8-bit signed integers.
@@ -32,9 +32,9 @@ fn decode_i2s_to_i8s(i2s: UInt32, i8s: UnsafePointer[Int8], n: Int = 16):
             if output_idx >= n:
                 return
                 
-            var byte_val = (i2s >> (byte_idx * 8)) & UInt32(0xFF)
+            var byte_val = (i2s >> (byte_idx * 8)) & Int32(0xFF)
             var bit_pos = bit_pair_idx * 2
-            var two_bits = (byte_val >> bit_pos) & UInt32(0x3)
+            var two_bits = (byte_val >> bit_pos) & Int32(0x3)
             
             var decoded_val: Int8
             if two_bits == 0:
@@ -78,7 +78,7 @@ fn bitlinear_kernel[
     # Local arrays (equivalent to CUDA local memory)
     var in_thread_C_local: Int32 
     var A_local = UnsafePointer[Int8].alloc(K_per_loop)
-    var B_reshape_local: UInt32 
+    var B_reshape_local: Int32 
     var B_decode_local = UnsafePointer[Int8].alloc(K_per_loop)
     var red_buf0: Int32
     
@@ -114,10 +114,10 @@ fn bitlinear_kernel[
         # Load B matrix data (packed int2 format) with strict bounds checking
         if B_row < N and B_col < (K // 4):
             var tensor_val = input1[B_row, B_col]
-            var cast_val = tensor_val.cast[DType.uint32]()
+            var cast_val = tensor_val.cast[DType.int32]()
             B_reshape_local = cast_val[0]
         else:
-            B_reshape_local = UInt32(0)
+            B_reshape_local = Int32(0)
         
         # Decode int2 to int8 values
         decode_i2s_to_i8s(B_reshape_local, B_decode_local, 16)
