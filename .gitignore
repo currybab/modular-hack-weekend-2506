@@ -1,0 +1,11 @@
+
+# pixi environments
+.pixi
+*.egg-info
+
+# model checkpoints
+checkpoints
+
+# python
+__pycache__
+*.pyc
