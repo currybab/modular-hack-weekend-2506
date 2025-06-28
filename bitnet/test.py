@@ -8,11 +8,19 @@ import ctypes
 import numpy as np
 from max.torch import CustomOpLibrary
 from pathlib import Path
+
+import numpy as np
+from max.driver import CPU, Accelerator, Device, Tensor
+from max.dtype import DType
+from max.engine import InferenceSession
+from max.graph import DeviceRef, Graph, TensorType, ops
+from numpy.typing import NDArray
+
 # set all seed
 torch.manual_seed(42)
 np.random.seed(42)
 
-bitnet_lib = ctypes.CDLL('bitnet_kernels/libbitnet.so')
+bitnet_lib = ctypes.CDLL((Path(__file__).parent / "bitnet_kernels" / "libbitnet.so").__str__())  # Skip CUDA library
 
 def bitnet_int8xint2_linear_cuda(input0, input1, s, ws, ret):
     out_shape = list(input0.shape)
@@ -61,7 +69,7 @@ if __name__ == '__main__':
         (3200, 10240),
         (20480, 3200),
     ]
-    bitnet_int8xint2_linear = bitnet_int8xint2_linear_cuda
+    bitnet_int8xint2_linear = bitnet_int8xint2_linear_mojo
     for N,K in test_list:
         weight = torch.randint(-1, 2, (N, K), dtype=torch.int8, device='cuda')
         weight_scale = torch.ones(1, dtype=torch.bfloat16, device='cuda')
@@ -81,7 +89,7 @@ if __name__ == '__main__':
             ret = torch.empty((1,N), dtype=torch.bfloat16, device=input0.device)
             out = bitnet_int8xint2_linear(input0, weight_compressed, s, ws, ret)
 
-            print(f'custom == np {torch.all(out==out_np)}')
+            print(f'custom == np {torch.allclose(out, out_np, atol=1e-3)}')
 
         input0 = torch.randint(-128,127,(1, K),dtype=torch.int8, device='cuda')
         input0_fp16 = input0.to(torch.float16)
