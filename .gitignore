@@ -9,3 +9,5 @@ checkpoints
 # python
 __pycache__
 *.pyc
+
+libbitnet.so
