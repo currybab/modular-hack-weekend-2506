@@ -104,7 +104,7 @@ fn bitlinear_kernel[
         # Each thread loads its own chunk based on thread ID and loop iteration
         var A_local_as_int32 = A_local.bitcast[Int32]()
         var input0_ptr = input0.ptr.bitcast[Int32]()
-        var vec4 = input0_ptr.load[width=4](k_0 * K_per_loop * K_block_size + local_x * K_per_loop)
+        var vec4 = input0_ptr.load[width=4]((k_0 * K_per_loop * K_block_size + local_x * K_per_loop) * 4)
         A_local_as_int32.store(vec4)
         
         # === LOAD B MATRIX (PACKED INT2) ===
@@ -124,40 +124,46 @@ fn bitlinear_kernel[
         # === DECODE INT2 TO INT8 ===
         # Convert packed int2 values to separate int8 values for computation
         decode_i2s_to_i8s(B_reshape_local, B_decode_local, 16)
-
+        
         # === DOT PRODUCT COMPUTATION ===
-        # @parameter
-        # for k_2_0 in range(4):
-        #     # __dp4a: CUDA intrinsic for 4-way dot product of int8 values
-        #     # Computes: A[0]*B[0] + A[1]*B[1] + A[2]*B[2] + A[3]*B[3] + accumulator
-        var a = A_local.load[width=16]().cast[DType.int32]()
-        var b = B_decode_local.load[width=16]().cast[DType.int32]()
-        var c = (a * b).reduce_add()
-        in_thread_C_local[0] = c
+        # Match CUDA kernel: 4 iterations of __dp4a with accumulation
+        @parameter
+        for k_2_0 in range(4):
+            # __dp4a equivalent: 4-way dot product of int8 values with accumulation
+            # Load 4 int8 values and extend to int32 for arithmetic
+            var a_int8 = A_local.offset(k_2_0 * 4).load[width=4]()
+            var b_int8 = B_decode_local.offset(k_2_0 * 4).load[width=4]()
+            
+            # Convert int8 to int32 for proper signed arithmetic
+            var a_int32 = a_int8.cast[DType.int32]()
+            var b_int32 = b_int8.cast[DType.int32]()
+            
+            # Compute dot product: sum of element-wise products
+            var dot4 = (a_int32 * b_int32).reduce_add()
+            in_thread_C_local[0] += dot4  # ACCUMULATE like CUDA
 
-        # ==================== WARP-LEVEL REDUCTION ====================
-        # Move thread-local result to reduction buffer
-        red_buf0[0] = in_thread_C_local[0];
-        
-        # Perform warp-level tree reduction using shuffle operations
-        # Reduces K_block_size partial results into a single value
-        #pragma unroll
-        var offset = K_block_size // 2
-        while offset > 0:
-            red_buf0[0] += shuffle_down(red_buf0[0], offset)
-            offset /= 2
-        
-        # ==================== OUTPUT WRITING ====================
-        # Calculate output position and scaling factor index  
-        var out_idx = global_x * N_block_size + local_y;
-        var ws_idx = out_idx // (N // ws_num);  # Weight scaling index
-        
-        # Only thread 0 in each warp writes the final result
-        if local_x == 0:
-            # Apply scaling: result / s[0] * ws[ws_idx], convert to bfloat16
-            # Convert to Float32, apply scaling, then cast to bfloat16
-            var result_float = Float32(red_buf0[0]) / Float32(s.ptr[0]) * Float32(ws.ptr[ws_idx])
-            output.ptr[out_idx] = result_float.cast[DType.bfloat16]()
+    # ==================== WARP-LEVEL REDUCTION ====================
+    # Move thread-local result to reduction buffer
+    red_buf0[0] = in_thread_C_local[0];
+    
+    # Perform warp-level tree reduction using shuffle operations
+    # Reduces K_block_size partial results into a single value
+    var offset = K_block_size // 2
+    while offset > 0:
+        red_buf0[0] += shuffle_down(red_buf0[0], offset)
+        offset //= 2
+    
+    # ==================== OUTPUT WRITING ====================
+    # Calculate output position and scaling factor index  
+    var out_idx = global_x * N_block_size + local_y;
+    var ws_idx = out_idx // (N // ws_num);  # Weight scaling index
+    
+    # Only thread 0 in each warp writes the final result
+    if local_x == 0:
+        # Apply scaling: result / s[0] * ws[ws_idx], convert to bfloat16
+        # Convert to Float32, apply scaling, then cast to bfloat16
+        var result_float = Float32(red_buf0[0]) / Float32(s.ptr[0]) * Float32(ws.ptr[ws_idx])
+        output.ptr[out_idx] = result_float.cast[DType.bfloat16]()
 
     
 
