@@ -91,12 +91,19 @@ __global__ void __launch_bounds__(128) ladder_int8xint2_kernel(int8_t* __restric
       // __dp4a: CUDA intrinsic for 4-way dot product of int8 values
       // Computes: A[0]*B[0] + A[1]*B[1] + A[2]*B[2] + A[3]*B[3] + accumulator
       in_thread_C_local[0] = __dp4a(*(int *)&A_local[((k_2_0 * 4))],*(int *)&B_decode_local[((k_2_0 * 4))], in_thread_C_local[0]);
+      // if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0 && blockIdx.y == 0) {
+      //   printf("CUDA: k_2_0 = %d A_local = [%d, %d, %d, %d] B_decode_local = [% d, %d, %d, %d]\n", k_2_0, A_local[(k_2_0 * 4)], A_local[(k_2_0 * 4) + 1], A_local[(k_2_0 * 4) + 2], A_local[(k_2_0 * 4) + 3], B_decode_local[(k_2_0 * 4)], B_decode_local[(k_2_0 * 4) + 1], B_decode_local[(k_2_0 * 4) + 2], B_decode_local[(k_2_0 * 4) + 3]);
+      //   printf("CUDA: in_thread_C_local = %d\n", in_thread_C_local[0]);
+      // }
     }
   }
   
   // ==================== WARP-LEVEL REDUCTION ====================
   // Move thread-local result to reduction buffer
   red_buf0[0] = in_thread_C_local[0];
+  // check red_buf0 is correct
+  // if (threadIdx.x == 0 && threadIdx.y == 0)
+  //   printf("CUDA: red_buf0[0] = %d local_x = %d local_y = %d global_x = %d global_y = %d\n", red_buf0[0],threadIdx.x,threadIdx.y,blockIdx.x,blockIdx.y);
   
   // Perform warp-level tree reduction using shuffle operations
   // Reduces K_block_size partial results into a single value

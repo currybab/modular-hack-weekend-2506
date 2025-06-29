@@ -104,7 +104,7 @@ fn bitlinear_kernel[
         # Each thread loads its own chunk based on thread ID and loop iteration
         var A_local_as_int32 = A_local.bitcast[Int32]()
         var input0_ptr = input0.ptr.bitcast[Int32]()
-        var vec4 = input0_ptr.load[width=4](k_0 * K_per_loop * K_block_size + local_x * K_per_loop)
+        var vec4 = input0_ptr.load[width=4]((k_0 * K_per_loop * K_block_size + local_x * K_per_loop) // 4)
         A_local_as_int32.store(vec4)
         
         # === LOAD B MATRIX (PACKED INT2) ===
@@ -112,14 +112,14 @@ fn bitlinear_kernel[
         # B matrix is packed: 4 int2 values = 1 byte, so divide indices by 4
         var B_as_int32 = input1.ptr.bitcast[Int32]()
         
-        B_reshape_local[] = B_as_int32.load(
+        B_reshape_local[] = B_as_int32.load((
             global_x * N_block_size * K // 4 +                   # Block offset
             (k_0 * K_block_size * K_per_loop * wmma_N // 4) +   # Loop iteration offset
             ((local_x >> 1) * wmma_K * wmma_N // 4) +           # Thread X offset (div by 2)
             ((local_y >> 3) * (wmma_K * wmma_N // 2) // 4) +     # Thread Y offset (div by 8)
             ((local_x & 1) * (wmma_K * wmma_N // 4) // 4) +      # Thread X remainder
             ((local_y & 7) * (wmma_K // 2) // 4)                 # Thread Y remainder 
-        )
+        ) // 4)
 
         # === DECODE INT2 TO INT8 ===
         # Convert packed int2 values to separate int8 values for computation
@@ -133,6 +133,8 @@ fn bitlinear_kernel[
             # Load 4 int8 values and extend to int32 for arithmetic
             var a_int8 = A_local.offset(k_2_0 * 4).load[width=4]()
             var b_int8 = B_decode_local.offset(k_2_0 * 4).load[width=4]()
+            # if local_x == 0 and local_y == 0 and global_x == 0 and global_y == 0:
+            #     print("MOJO: k_2_0 =", k_2_0, "a_int8 =", a_int8, "b_int8 =", b_int8)
             
             # Convert int8 to int32 for proper signed arithmetic
             var a_int32 = a_int8.cast[DType.int32]()
@@ -141,10 +143,15 @@ fn bitlinear_kernel[
             # Compute dot product: sum of element-wise products
             var dot4 = (a_int32 * b_int32).reduce_add()
             in_thread_C_local[0] += dot4  # ACCUMULATE like CUDA
+            # if local_x == 0 and local_y == 0 and global_x == 0 and global_y == 0:
+            #     print("MOJO: in_thread_C_local =", in_thread_C_local[0])
 
     # ==================== WARP-LEVEL REDUCTION ====================
     # Move thread-local result to reduction buffer
     red_buf0[0] = in_thread_C_local[0];
+    # check red_buf0 is correct
+    # if local_x == 0 and local_y == 0:
+    #     print("MOJO: red_buf0[0] = " + red_buf0[0].__str__(), "local_x = ", local_x, "local_y = ", local_y, "global_x = ", global_x, "global_y = ", global_y)
     
     # Perform warp-level tree reduction using shuffle operations
     # Reduces K_block_size partial results into a single value
