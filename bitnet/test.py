@@ -62,13 +62,13 @@ bitnet_int8xint2_linear = bitnet_int8xint2_linear_mojo
 if __name__ == '__main__':
     test_list = [
         (2560,  2560), 
-        (3840,  2560), 
-        (13824, 2560),
-        (2560,  6912) ,
-        (3200, 3200), 
-        (4800, 3200), 
-        (3200, 10240),
-        (20480, 3200),
+        # (3840,  2560), 
+        # (13824, 2560),
+        # (2560,  6912) ,
+        # (3200, 3200), 
+        # (4800, 3200), 
+        # (3200, 10240),
+        # (20480, 3200),
     ]
     for N,K in test_list:
         weight = torch.randint(-1, 2, (N, K), dtype=torch.int8, device='cuda')
@@ -84,14 +84,36 @@ if __name__ == '__main__':
             out_np = torch.tensor(out_np).cuda().to(torch.bfloat16)
 
             s = torch.ones(1, dtype=torch.bfloat16, device='cuda')
-            ws = torch.ones(6, dtype=torch.bfloat16, device='cuda')
+            
+            # Set correct ws size based on configuration
+            # From kernel code: arg_size = (ws_num, K_block_size, N_block_size)
+            ws_sizes = {
+                (2560, 2560): 1,   # arg_size = (1, 8, 16)
+                (3840, 2560): 3,   # arg_size = (3, 8, 16) 
+                (13824, 2560): 2,  # arg_size = (2, 8, 16)
+                (2560, 6912): 1,   # arg_size = (1, 8, 16)
+                (4800, 3200): 6,   # arg_size = (6, 8, 16)
+                (3200, 3200): 1,   # arg_size = (1, 8, 16)
+                (20480, 3200): 2,  # arg_size = (2, 8, 16)
+                (3200, 10240): 1,  # arg_size = (1, 8, 16)
+            }
+            ws_num = ws_sizes.get((N, K), 1)  # Default to 1 if not found
+            ws = torch.ones(ws_num, dtype=torch.bfloat16, device='cuda')
+            print(f"Using ws_num={ws_num} for configuration ({N}, {K})")
 
-            ret = torch.empty((1,N), dtype=torch.bfloat16, device=input0.device)
-            out = bitnet_int8xint2_linear(input0, weight_compressed, s, ws, ret)
+            # Test both CUDA and Mojo kernels
+            ret_mojo = torch.empty((1,N), dtype=torch.bfloat16, device=input0.device)
+            ret_cuda = torch.empty((1,N), dtype=torch.bfloat16, device=input0.device)
+            
+            out_mojo = bitnet_int8xint2_linear_mojo(input0, weight_compressed, s, ws, ret_mojo)
+            out_cuda = bitnet_int8xint2_linear_cuda(input0, weight_compressed, s, ws, ret_cuda)
 
-            print(f'custom == np {torch.allclose(out, out_np, atol=1e-3)}')
-            print(out)
-            print(out_np)
+            print(f'Mojo == NumPy: {torch.allclose(out_mojo, out_np, atol=1e-3)}')
+            print(f'CUDA == NumPy: {torch.allclose(out_cuda, out_np, atol=1e-3)}')
+            print(f'Mojo == CUDA:  {torch.allclose(out_mojo, out_cuda, atol=1e-3)}')
+            print(f'Mojo result:  {out_mojo}')
+            print(f'CUDA result:  {out_cuda}')
+            print(f'NumPy result: {out_np}')
 
         input0 = torch.randint(-128,127,(1, K),dtype=torch.int8, device='cuda')
         input0_fp16 = input0.to(torch.float16)

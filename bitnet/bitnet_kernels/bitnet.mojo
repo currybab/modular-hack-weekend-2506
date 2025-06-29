@@ -104,7 +104,7 @@ fn bitlinear_kernel[
         # Each thread loads its own chunk based on thread ID and loop iteration
         var A_local_as_int32 = A_local.bitcast[Int32]()
         var input0_ptr = input0.ptr.bitcast[Int32]()
-        var vec4 = input0_ptr.load[width=4]((k_0 * K_per_loop * K_block_size + local_x * K_per_loop) * 4)
+        var vec4 = input0_ptr.load[width=4](k_0 * K_per_loop * K_block_size + local_x * K_per_loop)
         A_local_as_int32.store(vec4)
         
         # === LOAD B MATRIX (PACKED INT2) ===
