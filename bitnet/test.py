@@ -10,12 +10,11 @@ from max.torch import CustomOpLibrary
 from pathlib import Path
 
 import numpy as np
-from max.driver import CPU, Accelerator, Device, Tensor
-from max.dtype import DType
-from max.engine import InferenceSession
-from max.graph import DeviceRef, Graph, TensorType, ops
 from numpy.typing import NDArray
+import torch._dynamo
 
+
+# torch._dynamo.config.recompile_limit = 256
 # set all seed
 torch.manual_seed(42)
 np.random.seed(42)
@@ -54,9 +53,11 @@ def bitnet_int8xint2_linear_mojo(input0, input1, s, ws, ret):
     N = input1.shape[0]
     K = input1.shape[1] * 4
     bitlinear = ops.bitlinear[{"M": M, "N": N, "K": K}]
-    torch.compile(bitlinear)(ret, input0, input1, s, ws)
+    bitlinear(ret, input0, input1, s, ws)
 
     return ret
+
+bitnet_int8xint2_linear = bitnet_int8xint2_linear_mojo
 
 if __name__ == '__main__':
     test_list = [
@@ -69,7 +70,6 @@ if __name__ == '__main__':
         (3200, 10240),
         (20480, 3200),
     ]
-    bitnet_int8xint2_linear = bitnet_int8xint2_linear_mojo
     for N,K in test_list:
         weight = torch.randint(-1, 2, (N, K), dtype=torch.int8, device='cuda')
         weight_scale = torch.ones(1, dtype=torch.bfloat16, device='cuda')
@@ -90,6 +90,8 @@ if __name__ == '__main__':
             out = bitnet_int8xint2_linear(input0, weight_compressed, s, ws, ret)
 
             print(f'custom == np {torch.allclose(out, out_np, atol=1e-3)}')
+            print(out)
+            print(out_np)
 
         input0 = torch.randint(-128,127,(1, K),dtype=torch.int8, device='cuda')
         input0_fp16 = input0.to(torch.float16)
@@ -99,32 +101,21 @@ if __name__ == '__main__':
         ret = torch.empty((1,N), dtype=torch.bfloat16, device=input0.device)
         s = torch.ones(1, dtype=torch.bfloat16, device='cuda')
         ws = torch.ones(6, dtype=torch.bfloat16, device='cuda')
-        t0 = benchmark.Timer(
-            stmt="bitnet_int8xint2_linear(input0, weight_compressed, s, ws, ret)",
-            setup="from __main__ import input0, weight_compressed, s, ws, ret, bitnet_int8xint2_linear",
-            num_threads=1,
-        )
+        # t0 = benchmark.Timer(
+        #     stmt="bitnet_int8xint2_linear(input0, weight_compressed, s, ws, ret)",
+        #     setup="from __main__ import input0, weight_compressed, s, ws, ret, bitnet_int8xint2_linear",
+        #     num_threads=1,
+        # )
 
-        t1 = benchmark.Timer(
-            stmt="torch.matmul(input0_bf16,weight_bf16)",
-            setup="from __main__ import input0_bf16, weight_bf16",
-            num_threads=1,
-        )
+        # t1 = benchmark.Timer(
+        #     stmt="torch.matmul(input0_bf16,weight_bf16)",
+        #     setup="from __main__ import input0_bf16, weight_bf16",
+        #     num_threads=1,
+        # )
 
-        time0 = t0.timeit(50)
-        time1 = t1.timeit(50)
+        # time0 = t0.timeit(50)
+        # time1 = t1.timeit(50)
 
-        print(f'Shape{N,K}, W2A8: {time0.mean * 1e6:.2f}us, torch BF16: {time1.mean * 1e6:.2f}us')
-        # activities = [ ProfilerActivity.CUDA, 
-        #             #   ProfilerActivity.CPU
-        #               ]
-        # sort_by_keyword = 'cuda' + "_time_total"
-        # with profile(activities=activities, record_shapes=True) as prof:
-        #     with record_function("model_inference1"):
-        #         for _ in range(10):
-        #             bitnet_int8xint2_linear(input0, weight_compressed, s, ws, ret)
-        #             torch.matmul(input0_fp16,weight_fp16)
-        #             torch.matmul(input0_bf16,weight_bf16)
+        # print(f'Shape{N,K}, W2A8: {time0.mean * 1e6:.2f}us, torch BF16: {time1.mean * 1e6:.2f}us')
 
-        # print(prof.key_averages().table(sort_by=sort_by_keyword, row_limit=15))
         

@@ -5,13 +5,14 @@ from layout import Layout, LayoutTensor
 from layout.tensor_builder import LayoutTensorBuild as tb
 from sys import sizeof, argv
 from testing import assert_equal
+from gpu.warp import shuffle_down
 
 # BitLinear function implementation following conv1d format
 alias BITLINEAR_TPB = 128
 alias BITLINEAR_BLOCKS_PER_GRID = (1, 1)
 
 @always_inline
-fn decode_i2s_to_i8s(i2s: Int32, i8s: UnsafePointer[Int8], n: Int = 16):
+fn decode_i2s_to_i8s(_i2s: UnsafePointer[Int32], i8s: UnsafePointer[Int8], n: Int = 16):
     """CUDA compatible decode_i2s_to_i8s implementation.
     
     Decodes packed 2-bit signed integers into 8-bit signed integers.
@@ -22,6 +23,7 @@ fn decode_i2s_to_i8s(i2s: Int32, i8s: UnsafePointer[Int8], n: Int = 16):
     - All 4th bit pairs from each byte → positions 12-15
     """
     
+    var i2s = _i2s[]
     var output_idx = 0
     
     # Process each bit pair position (0-3) across all 4 bytes
@@ -61,6 +63,7 @@ fn bitlinear_kernel[
     K: Int,
     K_block_size: Int,
     N_block_size: Int,
+    TPB: Int = 128,
 ](
     output: LayoutTensor[mut=True, DType.bfloat16, out_layout],
     input0: LayoutTensor[mut=True, DType.int8, in0_layout],
@@ -76,89 +79,86 @@ fn bitlinear_kernel[
     alias wmma_N = 16
     
     # Local arrays (equivalent to CUDA local memory)
-    var in_thread_C_local: Int32 
+    var in_thread_C_local = UnsafePointer[Int32].alloc(1)
     var A_local = UnsafePointer[Int8].alloc(K_per_loop)
-    var B_reshape_local: Int32 
+    var B_reshape_local = UnsafePointer[Int32].alloc(1)
     var B_decode_local = UnsafePointer[Int8].alloc(K_per_loop)
-    var red_buf0: Int32
+    var red_buf0 = UnsafePointer[Int32].alloc(1)
     
     # Initialize accumulator
-    in_thread_C_local = 0
+    in_thread_C_local[] = 0
+
+    var local_x = thread_idx.x
+    var local_y = thread_idx.y
+    var global_x = block_idx.x
+    var global_y = block_idx.y
     
     # Main computation loop (equivalent to #pragma unroll)
     # Use regular loop since range depends on runtime values
-    var loop_limit = K // (K_per_loop * K_block_size)
-    for k_0 in range(loop_limit):
+    @parameter
+    for k_0 in range(K // (K_per_loop * K_block_size)):
         # Load A matrix data (vectorized load equivalent to int4)
-        var A_idx = (k_0 * K_per_loop * K_block_size) + (thread_idx.x * K_per_loop)
         
-        # Load input0 data with very simple indexing
-        @parameter
-        for i in range(K_per_loop):
-            # Use only thread indices, avoid complex calculations
-            var row = 0  # For simplicity, use first row (M=1 in most test cases)
-            var col = (thread_idx.x + thread_idx.y * K_block_size + i) % K
-            
-            # Very strict bounds checking
-            if row < M and col < K:
-                var tensor_val = input0[row, col]
-                var cast_val = tensor_val.cast[DType.int8]()
-                A_local[i] = cast_val[0]
-            else:
-                A_local[i] = Int8(0)
+        # === LOAD A MATRIX (INT8) ===
+        # Vectorized load: Read 16 bytes (int4 = 128 bits) at once from A matrix
+        # Each thread loads its own chunk based on thread ID and loop iteration
+        var A_local_as_int32 = A_local.bitcast[Int32]()
+        var input0_ptr = input0.ptr.bitcast[Int32]()
+        var vec4 = input0_ptr.load[width=4](k_0 * K_per_loop * K_block_size + local_x * K_per_loop)
+        A_local_as_int32.store(vec4)
         
-        # Very simple B matrix indexing
-        var B_row = thread_idx.y % N
-        var B_col = thread_idx.x % (K // 4)
+        # === LOAD B MATRIX (PACKED INT2) ===
+        # Complex indexing to handle packed int2 format and tiled memory layout
+        # B matrix is packed: 4 int2 values = 1 byte, so divide indices by 4
+        var B_as_int32 = input1.ptr.bitcast[Int32]()
         
-        # Load B matrix data (packed int2 format) with strict bounds checking
-        if B_row < N and B_col < (K // 4):
-            var tensor_val = input1[B_row, B_col]
-            var cast_val = tensor_val.cast[DType.int32]()
-            B_reshape_local = cast_val[0]
-        else:
-            B_reshape_local = Int32(0)
-        
-        # Decode int2 to int8 values
+        B_reshape_local[] = B_as_int32.load(
+            global_x * N_block_size * K // 4 +                   # Block offset
+            (k_0 * K_block_size * K_per_loop * wmma_N // 4) +   # Loop iteration offset
+            ((local_x >> 1) * wmma_K * wmma_N // 4) +           # Thread X offset (div by 2)
+            ((local_y >> 3) * (wmma_K * wmma_N // 2) // 4) +     # Thread Y offset (div by 8)
+            ((local_x & 1) * (wmma_K * wmma_N // 4) // 4) +      # Thread X remainder
+            ((local_y & 7) * (wmma_K // 2) // 4)                 # Thread Y remainder 
+        )
+
+        # === DECODE INT2 TO INT8 ===
+        # Convert packed int2 values to separate int8 values for computation
         decode_i2s_to_i8s(B_reshape_local, B_decode_local, 16)
+
+        # === DOT PRODUCT COMPUTATION ===
+        # @parameter
+        # for k_2_0 in range(4):
+        #     # __dp4a: CUDA intrinsic for 4-way dot product of int8 values
+        #     # Computes: A[0]*B[0] + A[1]*B[1] + A[2]*B[2] + A[3]*B[3] + accumulator
+        var a = A_local.load[width=16]().cast[DType.int32]()
+        var b = B_decode_local.load[width=16]().cast[DType.int32]()
+        var c = (a * b).reduce_add()
+        in_thread_C_local[0] = c
+
+        # ==================== WARP-LEVEL REDUCTION ====================
+        # Move thread-local result to reduction buffer
+        red_buf0[0] = in_thread_C_local[0];
         
-        # Dot product computation (equivalent to __dp4a)
-        @parameter
-        for k_2_0 in range(4):
-            # Accumulate dot product
-            var acc = Int32(0)
-            for i in range(4):
-                acc += Int32(A_local[k_2_0 * 4 + i]) * Int32(B_decode_local[k_2_0 * 4 + i])
-            in_thread_C_local += acc
-    
-    # Warp-level reduction (simplified - no direct warp shuffle in Mojo)
-    red_buf0 = in_thread_C_local
-    
-    # Warp reduction (simplified version of __shfl_down_sync)
-    # Note: Mojo may not have direct equivalent to CUDA warp shuffles
-    # This is a placeholder for the reduction logic
-    var offset = K_block_size // 2
-    while offset > 0:
-        # In real implementation, this would need proper warp-level communication
-        # For now, we'll skip the reduction and use the local value
-        offset //= 2
-    
-    # Simplified output calculation for safety
-    if thread_idx.x == 0 and thread_idx.y == 0:  # Only first thread writes
-        var out_row = 0  # For M=1 case (most common in tests)
-        var out_col = block_idx.x  # Simple column mapping
+        # Perform warp-level tree reduction using shuffle operations
+        # Reduces K_block_size partial results into a single value
+        #pragma unroll
+        var offset = K_block_size // 2
+        while offset > 0:
+            red_buf0[0] += shuffle_down(red_buf0[0], offset)
+            offset /= 2
         
-        # Very strict bounds checking
-        if out_row < M and out_col < N:
-            # Simple calculation without complex scaling for debugging
-            var result = Float32(red_buf0) * 0.001  # Small scaling factor for testing
-            output[out_row, out_col] = result.cast[DType.bfloat16]()
-    
-    # # Clean up allocated memory
-    # A_local.free()
-    # B_decode_local.free()
+        # ==================== OUTPUT WRITING ====================
+        # Calculate output position and scaling factor index
+        var out_idx = global_x * N_block_size + global_y;
+        var ws_idx = out_idx // (N // ws_num);  # Weight scaling index
         
-    
+        # Only thread 0 in each warp writes the final result
+        if local_x == 0:
+            # Apply scaling: result / s[0] * ws[ws_idx], convert to bfloat16
+            # Convert to Float32, apply scaling, then cast to bfloat16
+            var result_float = Float32(red_buf0[0]) / Float32(s.ptr[0]) * Float32(ws.ptr[ws_idx])
+            output.ptr[out_idx] = result_float.cast[DType.bfloat16]()
+
     
 
 
