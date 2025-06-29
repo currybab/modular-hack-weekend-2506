@@ -98,7 +98,7 @@ class BitLinearKernel(nn.Module):
 
     def forward(self, input):
         input, s = self.quant_input(input)
-        return bitnet_int8xint2_linear(input, self.weight, s, self.weight_scale)
+        return bitnet_int8xint2_linear_mojo(input, self.weight, s, self.weight_scale)
 
 class BitLinear(nn.Linear):
     @torch.compile

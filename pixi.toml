@@ -14,6 +14,7 @@ modular = ">=25.5.0.dev2025062805,<26"
 python = "3.11.*"
 pytorch = ">=2.7.1,<3"
 max = ">=25.5.0.dev2025062805,<26"
+cuda-nvcc = "12.8.*"
 
 [pypi-dependencies]
 fire = ">=0.7.0, <0.8"

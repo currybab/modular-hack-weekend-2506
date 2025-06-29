@@ -6,6 +6,7 @@ from layout.tensor_builder import LayoutTensorBuild as tb
 from sys import sizeof, argv
 from testing import assert_equal
 from gpu.warp import shuffle_down
+from time import perf_counter
 
 # BitLinear function implementation following conv1d format
 alias BITLINEAR_TPB = 128
@@ -63,13 +64,14 @@ fn bitlinear_kernel[
     K: Int,
     K_block_size: Int,
     N_block_size: Int,
+    dtype: DType,
     TPB: Int = 128,
 ](
-    output: LayoutTensor[mut=True, DType.bfloat16, out_layout],
+    output: LayoutTensor[mut=True, dtype, out_layout],
     input0: LayoutTensor[mut=True, DType.int8, in0_layout],
     input1: LayoutTensor[mut=True, DType.int8, in1_layout],
-    s: LayoutTensor[mut=True, DType.bfloat16, s_layout],
-    ws: LayoutTensor[mut=True, DType.bfloat16, ws_layout],
+    s: LayoutTensor[mut=True, dtype, s_layout],
+    ws: LayoutTensor[mut=True, dtype, ws_layout],
     ws_num: Int,
 ):
     """BitLinear kernel implementation for int8 x int2 matrix multiplication."""
@@ -170,7 +172,7 @@ fn bitlinear_kernel[
         # Apply scaling: result / s[0] * ws[ws_idx], convert to bfloat16
         # Convert to Float32, apply scaling, then cast to bfloat16
         var result_float = Float32(red_buf0[0]) / Float32(s.ptr[0]) * Float32(ws.ptr[ws_idx])
-        output.ptr[out_idx] = result_float.cast[DType.bfloat16]()
+        output.ptr[out_idx] = result_float.cast[dtype]()
 
     
 
@@ -189,12 +191,13 @@ struct BitLinearCustomOp:
         M: Int,
         N: Int,
         K: Int,
+        dtype: DType,
     ](
-        output: OutputTensor[dtype=DType.bfloat16, rank=2],
+        output: OutputTensor[dtype=dtype, rank=2],
         input0: InputTensor[dtype=DType.int8, rank=2], 
         input1: InputTensor[dtype=DType.int8, rank=2],
-        s: InputTensor[dtype=DType.bfloat16, rank=1],
-        ws: InputTensor[dtype=DType.bfloat16, rank=1],
+        s: InputTensor[dtype=dtype, rank=1],
+        ws: InputTensor[dtype=dtype, rank=1],
         ctx: DeviceContextPtr,
     ) raises:
         var out_tensor = output.to_layout_tensor()
@@ -273,11 +276,12 @@ struct BitLinearCustomOp:
             else:
                 raise Error("required ladder gemm kernel: M ", M, ", N ", N, ", K ", K)
             ws_num, K_block_size, N_block_size = arg_size
-            # Launch the bitlinear kernel
+            # Launch the bitlinear kernel with timing
+            var start_time = perf_counter()
             gpu_ctx.enqueue_function[
                 bitlinear_kernel[
                     in0_layout, in1_layout, out_layout, s_layout, ws_layout,
-                    M, N, K, 8, 16,
+                    M, N, K, 8, 16, dtype
                 ]
             ](
                 out_tensor,
@@ -289,6 +293,11 @@ struct BitLinearCustomOp:
                 grid_dim=grid_dim,
                 block_dim=block_dim,
             )
+            # Synchronize GPU to ensure kernel completion before measuring end time
+            gpu_ctx.synchronize()
+            var end_time = perf_counter()
+            var kernel_time_seconds = end_time - start_time
+            print("Mojo kernel execution time:", kernel_time_seconds * 1000, "ms")
             
         elif target == "cpu":
             # CPU fallback implementation could go here
