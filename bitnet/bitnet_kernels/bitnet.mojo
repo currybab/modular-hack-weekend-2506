@@ -148,8 +148,8 @@ fn bitlinear_kernel[
             offset /= 2
         
         # ==================== OUTPUT WRITING ====================
-        # Calculate output position and scaling factor index
-        var out_idx = global_x * N_block_size + global_y;
+        # Calculate output position and scaling factor index  
+        var out_idx = global_x * N_block_size + local_y;
         var ws_idx = out_idx // (N // ws_num);  # Weight scaling index
         
         # Only thread 0 in each warp writes the final result
